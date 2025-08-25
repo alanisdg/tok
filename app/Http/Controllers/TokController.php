@@ -72,21 +72,10 @@ class TokController extends Controller
         $request->validate([
             'q' => ['nullable', 'string', 'max:255'],
             'all' => ['nullable'],
-            'page' => ['nullable', 'integer', 'min:1'],
-            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
         $q = (string) $request->input('q', '');
-        // robust boolean handling: treat '1', 'true', 'on' as true; '0', 'false', 'off' as false
-        $rawAll = strtolower((string) $request->input('all', ''));
-        $explicitFalse = in_array($rawAll, ['0','false','off','no'], true);
-        $explicitTrue = in_array($rawAll, ['1','true','on','yes'], true);
-        // Default behavior: if there's a query and no explicit false, search globally
-        $all = $explicitTrue || ($q !== '' && !$explicitFalse);
-        $page = max(1, (int) $request->input('page', 1));
-        $perPage = (int) $request->input('per_page', 20);
-        if ($perPage < 1) { $perPage = 20; }
-        if ($perPage > 100) { $perPage = 100; }
+        $all = filter_var($request->input('all'), FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
 
         $builder = Tok::query()
             ->with(['user:id,name', 'category:id,title'])
@@ -98,19 +87,10 @@ class TokController extends Controller
         }
 
         if ($q !== '') {
-            $builder->where(function($qb) use ($q) {
-                $qb->where('title', 'like', "%{$q}%")
-                   ->orWhereHas('user', function($uq) use ($q) {
-                       $uq->where('name', 'like', "%{$q}%");
-                   })
-                   ->orWhereHas('category', function($cq) use ($q) {
-                       $cq->where('title', 'like', "%{$q}%");
-                   });
-            });
+            $builder->where('title', 'like', "%{$q}%");
         }
 
-        $paginator = $builder->paginate($perPage, ['*'], 'page', $page);
-        $toks = $paginator->items();
+        $toks = $builder->limit(100)->get();
 
         // Aggregate users with counts of matching toks
         $userCounts = Tok::query()
@@ -119,9 +99,7 @@ class TokController extends Controller
                 $q2->where('user_id', $request->user()->id);
             })
             ->when($q !== '', function ($q2) use ($q) {
-                $q2->where(function($w) use ($q) {
-                    $w->where('title', 'like', "%{$q}%");
-                });
+                $q2->where('title', 'like', "%{$q}%");
             })
             ->groupBy('user_id')
             ->orderByDesc('cnt')
@@ -146,12 +124,6 @@ class TokController extends Controller
         return response()->json([
             'toks' => $toks,
             'users' => $matchingUsers,
-            'meta' => [
-                'current_page' => $paginator->currentPage(),
-                'last_page' => $paginator->lastPage(),
-                'per_page' => $paginator->perPage(),
-                'total' => $paginator->total(),
-            ],
         ]);
     }
 }
